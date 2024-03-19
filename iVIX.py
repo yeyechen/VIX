@@ -8,10 +8,6 @@ options_dataset = pd.read_csv('options.csv', index_col=0, encoding='GBK')
 trade_day_dataset = pd.read_csv('tradeday.csv', encoding='GBK')
 true_ivix_dataset = pd.read_csv('ivixx.csv', encoding='GBK')
 
-
-# ==============================================================================
-# 开始计算ivix部分
-# ==============================================================================
 def calc_interpolated_risk_free_interest_rates(options, vix_date):
     """
     Parameters:
@@ -22,12 +18,12 @@ def calc_interpolated_risk_free_interest_rates(options, vix_date):
         interpolated_shibor_rates：与到期日对应的年化期限(maturity)的risk free interest rates
     """
     vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
-    vix_date_in_str_format = vix_date_in_datetime_format.strftime("%Y-%m-%d")
+    vix_date_in_str_format = vix_date_in_datetime_format.strftime('%Y-%m-%d')
 
-    # me: sort in ascending order for all unique expiration dates
+    # sort in ascending order for all unique expiration dates
     expiration_dates = np.sort(options.EXE_ENDDATE.unique())
 
-    # me: collect all maturities from 'date' to all expiration dates, into a dictionary.
+    # collect all maturities from 'date' to all expiration dates, into a dictionary.
     # {key: expiration date, value: maturity in % in year}
     maturities = {}
     for day in expiration_dates:
@@ -35,8 +31,8 @@ def calc_interpolated_risk_free_interest_rates(options, vix_date):
         # % in year
         maturities[day] = float((day - vix_date_in_datetime_format).days) / 365.0
 
-    # me: 选取最近的有数据的日期，如果没有当天interest rate数据，则选取最近日的interest rate数据
-    latest_shibor_date = datetime.strptime(shibor_rate_dataset.index[0], "%Y-%m-%d")
+    # 选取最近的有数据的日期，如果没有当天interest rate数据，则选取最近日的interest rate数据
+    latest_shibor_date = datetime.strptime(shibor_rate_dataset.index[0], '%Y-%m-%d')
     if vix_date_in_datetime_format >= latest_shibor_date:
         vix_date_shibor_rates = shibor_rate_dataset.iloc[0].values
     else:
@@ -46,15 +42,15 @@ def calc_interpolated_risk_free_interest_rates(options, vix_date):
     # {key: expiration date, value: interpolated shibor rate}
     interpolated_shibor_rates = {}
 
-    # me: standard interest rate periods from the data that we have
-    interest_rate_periods = np.array([1.0, 7.0, 14.0, 30.0, 90.0, 180.0, 270.0, 360.0]) / 360.0
-    # me: perform interpolation for different maturities
+    # standard interest rate periods from the data that we have
+    interest_rate_periods = np.array([1.0, 7.0, 14.0, 30.0, 90.0, 180.0, 270.0, 365.0]) / 365.0
+    # perform interpolation for different maturities
     cs = interpolate.CubicSpline(interest_rate_periods, vix_date_shibor_rates)
     min_period = min(interest_rate_periods)
     max_period = max(interest_rate_periods)
 
     for day in maturities.keys():
-        # me: 与到期日对应的年化期限
+        # 与到期日对应的年化期限
         maturity = maturities[day]
         # 把值拉回到定义到区间内
         if maturities[day] > max_period:
@@ -68,52 +64,34 @@ def calc_interpolated_risk_free_interest_rates(options, vix_date):
     return interpolated_shibor_rates
 
 
-def getHistDayOptions(options, vixDate):
-    options = options.loc[vixDate, :]
-    return options
-
-
-def getNearNextOptExpDate(options, vixDate):
-    # 找到options中的当月和次月期权到期日；
-    # 用这两个期权隐含的未来波动率来插值计算未来30隐含波动率，是为市场恐慌指数VIX；
-    # 如果options中的最近到期期权离到期日仅剩1天以内，则抛弃这一期权，改
-    # 选择次月期权和次月期权之后第一个到期的期权来计算。
-    # 返回的near和next就是用来计算VIX的两个期权的到期日
+def get_near_and_next_term_option_expiration_dates(options, vix_date):
     """
-    params: options: 该date为交易日的所有期权合约的基本信息和价格信息
-            vixDate: VIX的计算日期
-    return: near: 当月合约到期日（ps：大于1天到期）
-            next：次月合约到期日
-    """
-    vixDate = datetime.strptime(vixDate, '%Y/%m/%d')
-    optionsExpDate = list(pd.Series(options.EXE_ENDDATE.values.ravel()).unique())
-    optionsExpDate = [datetime.strptime(i, '%Y/%m/%d %H:%M') for i in optionsExpDate]
-    # me: 频繁的remove是因为想在optionsExpDate里向后平移，逻辑是对的
-    near = min(optionsExpDate)
-    optionsExpDate.remove(near)
-    if near.day - vixDate.day < 1:  # me: 严谨来说，是要加month约束的，但是在vix里我们只考虑<30天内的期权，这里原作者偷懒了
-        near = min(optionsExpDate)
-        optionsExpDate.remove(near)
-    nt = min(optionsExpDate)
-    return near, nt
+    Parameters:
+        options: 计算VIX的当天的options的数据
+        vix_date: 用来计算VIX的日期
 
+    Return:
+        near_term_expiration_date: 当月合约的到期日
+        next_term_expiration_date: 次月合约的到期日
+    """
+    vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
+    # convert all unique expiration dates to datetime format into a python list
+    expiration_dates = [datetime.strptime(i, '%Y/%m/%d %H:%M') for i in list(options.EXE_ENDDATE.unique())]
 
-def getStrikeMinCallMinusPutClosePrice(options):
-    # options 中包括计算某日VIX的call和put两种期权，
-    # 对每个行权价，计算相应的call和put的价格差的绝对值，
-    # 返回这一价格差的绝对值最小的那个行权价，
-    # 并返回该行权价对应的call和put期权价格的差
-    """
-    params:options: 该date为交易日的所有期权合约的基本信息和价格信息
-    return: strike: 看涨合约价格-看跌合约价格 的差值的绝对值最小的行权价
-            priceDiff: 以及这个差值，这个是用来确定中间行权价的第一步
-    """
-    call = options[options.EXE_MODE == u"认购"].set_index(u"EXE_PRICE").sort_index()
-    put = options[options.EXE_MODE == u"认沽"].set_index(u"EXE_PRICE").sort_index()
-    callMinusPut = call.CLOSE - put.CLOSE
-    strike = abs(callMinusPut).idxmin()
-    priceDiff = callMinusPut[strike].min()
-    return strike, priceDiff
+    # 频繁的remove是因为想在optionsExpDate里向后平移，逻辑是对的
+    # we want to get near term expiration date by selecting the nearest expiration date,
+    # but if the nearest expiration date is less than 1 day to current vix_date, we roll
+    # to the next expiration date.
+    # next term expiration date is next nearest expiration
+    # todo: refactor
+    near_term_expiration_date = min(expiration_dates)
+    expiration_dates.remove(near_term_expiration_date)
+    if near_term_expiration_date.day - vix_date_in_datetime_format.day < 5:  # todo: 严谨来说，是要加month约束的，但是在vix里我们只考虑<30天内的期权，这里原作者偷懒了
+        near_term_expiration_date = min(expiration_dates)
+        expiration_dates.remove(near_term_expiration_date)
+    next_term_expiration_date = min(expiration_dates)
+
+    return near_term_expiration_date, next_term_expiration_date
 
 
 def calSigmaSquare(options, FF, R, T):
@@ -185,58 +163,72 @@ def calSigmaSquare(options, FF, R, T):
     return sigma
 
 
-def changeste(t):
-    if t.month >= 10:
-        str_t = t.strftime('%Y/%m/%d ') + '0:00'
-    else:
-        # me: 把月份中的0去掉了，2015/03/22 -> 2015/3/22
-        str_t = t.strftime('%Y/%m/%d ')
-        str_t = str_t[:5] + str_t[6:] + '0:00'
-    return str_t
-
-
-def calDayVIX(vixDate):
-    # 利用CBOE的计算方法，计算历史某一日的未来30日期权波动率指数VIX
+def calc_vix_index(vix_date):
     """
-    params：vixDate：计算VIX的日期  '%Y/%m/%d' 字符串格式
-    return：VIX结果
+    Parameters:
+        vix_date：计算VIX的当天日期，'%Y/%m/%d' 字符串格式
+
+    Return:
+        vix: VIX Index值
     """
 
-    # 拿取所需期权信息
-    options = getHistDayOptions(options_dataset, vixDate)
-    near, nexts = getNearNextOptExpDate(options, vixDate)
-    shibor = calc_interpolated_risk_free_interest_rates(options, vixDate)
-    R_near = shibor[datetime(near.year, near.month, near.day)]
-    R_next = shibor[datetime(nexts.year, nexts.month, nexts.day)]
+    # 在options_dataset里选取以vix_date为起始日期的所有options数据
+    options = options_dataset.loc[vix_date, :]
 
-    str_near = changeste(near)
-    str_nexts = changeste(nexts)
-    optionsNearTerm = options[options.EXE_ENDDATE == str_near]
-    optionsNextTerm = options[options.EXE_ENDDATE == str_nexts]
-    # time to expiration
-    vixDate = datetime.strptime(vixDate, '%Y/%m/%d')
-    T_near = (near - vixDate).days / 365.0
-    T_next = (nexts - vixDate).days / 365.0
-    # the forward index prices
-    nearPriceDiff = getStrikeMinCallMinusPutClosePrice(optionsNearTerm)
-    nextPriceDiff = getStrikeMinCallMinusPutClosePrice(optionsNextTerm)
-    near_F = nearPriceDiff[0] + np.exp(T_near * R_near) * nearPriceDiff[1]
-    next_F = nextPriceDiff[0] + np.exp(T_next * R_next) * nextPriceDiff[1]
+    near_term_expiration_date, next_term_expiration_date = get_near_and_next_term_option_expiration_dates(options, vix_date)
+
+    # get risk-free interest rates for both near-term and next-term options to expiration
+    interpolated_shibor_rates = calc_interpolated_risk_free_interest_rates(options, vix_date)
+    near_term_risk_free_rate = interpolated_shibor_rates[near_term_expiration_date]
+    next_term_risk_free_rate = interpolated_shibor_rates[next_term_expiration_date]
+
+    # time to maturity in % year
+    vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
+    near_maturity = (near_term_expiration_date - vix_date_in_datetime_format).days / 365.0
+    next_maturity = (next_term_expiration_date - vix_date_in_datetime_format).days / 365.0
+
+    # get near term and next term options which are pandas dataframes
+    near_term_options = options[pd.to_datetime(options.EXE_ENDDATE) == near_term_expiration_date]
+    next_term_options = options[pd.to_datetime(options.EXE_ENDDATE) == next_term_expiration_date]
+
+    # start calculating forward prices for near and next term options:
+
+    # split calls and puts from near and next options, and set the index of the panda dataframe to the values of the
+    # 'EXE_PRICE' column, and then sort the resulting dataframe based on the index
+    near_call_options = near_term_options[near_term_options.EXE_MODE == '认购'].set_index('EXE_PRICE').sort_index()
+    near_put_options = near_term_options[near_term_options.EXE_MODE == '认沽'].set_index('EXE_PRICE').sort_index()
+    next_call_options = next_term_options[next_term_options.EXE_MODE == '认购'].set_index('EXE_PRICE').sort_index()
+    next_put_options = next_term_options[next_term_options.EXE_MODE == '认沽'].set_index('EXE_PRICE').sort_index()
+
+    # at-the-money strike price, the strike price when |call price - put price| is smallest
+    near_atm_strike_price = abs(near_call_options.CLOSE - near_put_options.CLOSE).idxmin()
+    next_atm_strike_price = abs(next_call_options.CLOSE - next_put_options.CLOSE).idxmin()
+
+    # calculate the price difference between call option and put option for at-the-money strike price
+    # todo: comment, and why min()?
+    near_atm_call_put_price_diff = (near_call_options.CLOSE - near_put_options.CLOSE)[near_atm_strike_price].min()
+    next_atm_call_put_price_diff = (next_call_options.CLOSE - next_put_options.CLOSE)[next_atm_strike_price].min()
+
+    # apply the formula for calculating forward prices (or called forward index level)
+    near_forward_price = near_atm_strike_price + np.exp(near_maturity * near_term_risk_free_rate) * near_atm_call_put_price_diff
+    next_forward_price = next_atm_strike_price + np.exp(next_maturity * next_term_risk_free_rate) * next_atm_call_put_price_diff
+
     # 计算不同到期日期权对于VIX的贡献
-    near_sigma = calSigmaSquare(optionsNearTerm, near_F, R_near, T_near)
-    next_sigma = calSigmaSquare(optionsNextTerm, next_F, R_next, T_next)
+    # todo: refactor
+    near_sigma = calSigmaSquare(near_term_options, near_forward_price, near_term_risk_free_rate, near_maturity)
+    next_sigma = calSigmaSquare(next_term_options, next_forward_price, next_term_risk_free_rate, next_maturity)
 
     # 利用两个不同到期日的期权对VIX的贡献sig1和sig2，
     # 已经相应的期权剩余到期时间T1和T2；
     # 差值得到并返回VIX指数(%)
-    w = (T_next - 30.0 / 365.0) / (T_next - T_near)
-    vix = T_near * w * near_sigma + T_next * (1 - w) * next_sigma
+    w = (next_maturity - 30.0 / 365.0) / (next_maturity - near_maturity)
+    vix = near_maturity * w * near_sigma + next_maturity * (1 - w) * next_sigma
     return 100 * np.sqrt(abs(vix) * 365.0 / 30.0)
 
 
 ivix = []
 for day in trade_day_dataset['DateTime']:
-    ivix.append(calDayVIX(day))
+    ivix.append(calc_vix_index(day))
     break
     # print ivix
 
