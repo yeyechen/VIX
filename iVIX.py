@@ -3,10 +3,13 @@ import numpy as np
 import pandas as pd
 from scipy import interpolate
 
+MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD = 5
+
 shibor_rate_dataset = pd.read_csv('shibor.csv', index_col=0, encoding='GBK')
 options_dataset = pd.read_csv('options.csv', index_col=0, encoding='GBK')
 trade_day_dataset = pd.read_csv('tradeday.csv', encoding='GBK')
 true_ivix_dataset = pd.read_csv('ivixx.csv', encoding='GBK')
+
 
 def calc_interpolated_risk_free_interest_rates(options, vix_date):
     """
@@ -78,89 +81,95 @@ def get_near_and_next_term_option_expiration_dates(options, vix_date):
     # convert all unique expiration dates to datetime format into a python list
     expiration_dates = [datetime.strptime(i, '%Y/%m/%d %H:%M') for i in list(options.EXE_ENDDATE.unique())]
 
-    # 频繁的remove是因为想在optionsExpDate里向后平移，逻辑是对的
     # we want to get near term expiration date by selecting the nearest expiration date,
-    # but if the nearest expiration date is less than 1 day to current vix_date, we roll
-    # to the next expiration date.
-    # next term expiration date is next nearest expiration
-    # todo: refactor
-    near_term_expiration_date = min(expiration_dates)
-    expiration_dates.remove(near_term_expiration_date)
-    if near_term_expiration_date.day - vix_date_in_datetime_format.day < 5:  # todo: 严谨来说，是要加month约束的，但是在vix里我们只考虑<30天内的期权，这里原作者偷懒了
-        near_term_expiration_date = min(expiration_dates)
-        expiration_dates.remove(near_term_expiration_date)
-    next_term_expiration_date = min(expiration_dates)
+    # but if time to maturity from current vix_date
+    # is less than a certain number of days that makes the resulting vix index
+    # not as meaningful, we roll to the next expiration date until threshold condition is satisfied.
+    # next term expiration date is next available expiration date to near term expiration date
+    sorted_expiration_dates = sorted(expiration_dates)
+    near_term_expiration_date_index = 0
+    next_term_expiration_date_index = 1
+
+    while ((next_term_expiration_date_index < len(expiration_dates)) and
+        ((sorted_expiration_dates[near_term_expiration_date_index] - vix_date_in_datetime_format).days <
+         MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD)):
+
+        near_term_expiration_date_index += 1
+        next_term_expiration_date_index += 1
+
+    near_term_expiration_date = sorted_expiration_dates[near_term_expiration_date_index]
+    next_term_expiration_date = sorted_expiration_dates[next_term_expiration_date_index]
 
     return near_term_expiration_date, next_term_expiration_date
 
 
-def calSigmaSquare(options, FF, R, T):
-    # 计算某个到期日期权对于VIX的贡献sigma；
-    # 输入为期权数据options，FF为forward index price，
-    # R为无风险利率， T为期权剩余到期时间
+def calc_sigma_square(call_options, put_options, options, forward_price, risk_free_rate, maturity):
     """
-    params: options:该date为交易日的所有期权合约的基本信息和价格信息
-            FF: 根据上一步计算得来的strike，然后再计算得到的forward index price， 根据它对所需要的看涨看跌合约进行划分。
-                取小于FF的第一个行权价为中间行权价K0， 然后选取大于等于K0的所有看涨合约， 选取小于等于K0的所有看跌合约。
-                对行权价为K0的看涨看跌合约，删除看涨合约，不过看跌合约的价格为两者的均值。
-            R： 这部分期权合约到期日对应的无风险利率 shibor
-            T： 还有多久到期（年化）
-    return：Sigma：得到的结果是传入该到期日数据的Sigma
+    Parameters:
+        call_options: 当天的call options的数据
+        put_options: 当天的put options的数据
+        forward_price: forward price / forward index level
+        risk_free_rate: 与年化期限对应的risk free interest rate
+        maturity: 年化期限
+
+    Return:
+        sigma_square: 用于计算VIX index的volatility
     """
-    callAll = options[options.EXE_MODE == u"认购"].set_index(u"EXE_PRICE").sort_index()
-    putAll = options[options.EXE_MODE == u"认沽"].set_index(u"EXE_PRICE").sort_index()
-    callAll['deltaK'] = 0.05  # me: 数据特殊，deltaK_i都等于0.05
-    putAll['deltaK'] = 0.05
-
-    # Interval between strike prices
-    index = callAll.index
-    if len(index) < 3:
-        callAll['deltaK'] = index[-1] - index[0]
+    # get K_0 (first price below the forward price) and use it to get out-of-the-money call/put options
+    options = options.set_index('EXE_PRICE').sort_index()
+    if options[options.index < forward_price].empty:
+        K_0 = options[options.index >= forward_price].index[0]
     else:
-        for i in range(1, len(index) - 1):
-            callAll.loc[index[i], 'deltaK'] = (index[i + 1] - index[i - 1]) / 2.0
-        callAll.loc[index[0], 'deltaK'] = index[1] - index[0]
-        callAll.loc[index[-1], 'deltaK'] = index[-1] - index[-2]
-    index = putAll.index
-    if len(index) < 3:
-        putAll['deltaK'] = index[-1] - index[0]
+        K_0 = options[options.index < forward_price].index[-1]
+
+    otm_call_options = call_options[call_options.index > K_0].copy()
+    otm_put_options = put_options[put_options.index < K_0].copy()
+
+    # Interval between strike prices (Delta K_i)
+    # get a series of strike prices for call/put options (the value for index = strike prices)
+    # and calculate the DELTA_K value for all options with index i
+    # at the upper and lower edges of any given strip of options,
+    # DELTA_K is simply the difference between K_i and the adjacent strike price.
+    otm_call_strikes = otm_call_options.index
+    if otm_call_strikes.empty:
+        pass
+    elif len(otm_call_strikes) < 3:
+        otm_call_options['DELTA_K'] = otm_call_strikes[-1] - otm_call_strikes[0]
     else:
-        for i in range(1, len(index) - 1):
-            putAll.loc[index[i], 'deltaK'] = (index[i + 1] - index[i - 1]) / 2.0
-        putAll.loc[index[0], 'deltaK'] = index[1] - index[0]
-        putAll.loc[index[-1], 'deltaK'] = index[-1] - index[-2]
+        for i in range(1, len(otm_call_strikes) - 1):
+            otm_call_options.loc[otm_call_strikes[i], 'DELTA_K'] = (otm_call_strikes[i + 1] - otm_call_strikes[i - 1]) / 2.0
+        otm_call_options.loc[otm_call_strikes[0], 'DELTA_K'] = otm_call_strikes[1] - otm_call_strikes[0]
+        otm_call_options.loc[otm_call_strikes[-1], 'DELTA_K'] = otm_call_strikes[-1] - otm_call_strikes[-2]
 
-    # me: 这里把F当成K_0了
-    call = callAll[callAll.index > FF]
-    put = putAll[putAll.index < FF]
-    FF_idx = FF
-    if put.empty:
-        FF_idx = call.index[0]
-        callComponent = call.CLOSE * call.deltaK / call.index / call.index
-        sigma = (sum(callComponent)) * np.exp(T * R) * 2 / T
-        sigma = sigma - (FF / FF_idx - 1) ** 2 / T
-    elif call.empty:
-        FF_idx = put.index[-1]
-        putComponent = put.CLOSE * put.deltaK / put.index / put.index
-        sigma = (sum(putComponent)) * np.exp(T * R) * 2 / T
-        sigma = sigma - (FF / FF_idx - 1) ** 2 / T
+    otm_put_strikes = otm_put_options.index
+    if otm_put_strikes.empty:
+        pass
+    elif len(otm_put_strikes) < 3:
+        otm_put_options['DELTA_K'] = otm_put_strikes[-1] - otm_put_strikes[0]
     else:
-        # me: 此时FF_idx的意义就是K_0
-        FF_idx = put.index[-1]
-        try:
-            if len(putAll.loc[FF_idx, 'CLOSE']) > 1:
-                # me: 计算Q(K_0), 但是不知道values[1]和[0]的含义
-                put.loc[put.index[-1], 'CLOSE'] = (putAll.loc[FF_idx, 'CLOSE'].values[1] +
-                                                   callAll.loc[FF_idx, 'CLOSE'].values[0]) / 2.0
+        for i in range(1, len(otm_put_strikes) - 1):
+            otm_put_options.loc[otm_put_strikes[i], 'DELTA_K'] = (otm_put_strikes[i + 1] - otm_put_strikes[i - 1]) / 2.0
+        otm_put_options.loc[otm_put_strikes[0], 'DELTA_K'] = otm_put_strikes[1] - otm_put_strikes[0]
+        otm_put_options.loc[otm_put_strikes[-1], 'DELTA_K'] = otm_put_strikes[-1] - otm_put_strikes[-2]
 
-        except:
-            put.loc[put.index[-1], 'CLOSE'] = (putAll.loc[FF_idx, 'CLOSE'] + callAll.loc[FF_idx, 'CLOSE']) / 2.0
+    # calculate (Delta_K_i / K_i^2) * price(K_i) in the formula, we need to calculate this part for K_0 explicitly
+    call_component = pd.Series()
+    put_component = pd.Series()
+    delta_k_0 = 0
+    if not otm_call_strikes.empty:
+        call_component = otm_call_options.CLOSE * otm_call_options.DELTA_K / otm_call_options.index / otm_call_options.index
+        delta_k_0 = K_0 - otm_call_strikes[0]
+    if not otm_put_strikes.empty:
+        put_component = otm_put_options.CLOSE * otm_put_options.DELTA_K / otm_put_options.index / otm_put_options.index
+        delta_k_0 = otm_put_strikes[-1] - K_0
+    if (not otm_call_strikes.empty) and (not otm_put_strikes.empty):
+        delta_k_0 = (otm_call_strikes[0] - otm_put_strikes[-1]) / 2
 
-        callComponent = call.CLOSE * call.deltaK / call.index / call.index
-        putComponent = put.CLOSE * put.deltaK / put.index / put.index
-        sigma = (sum(callComponent) + sum(putComponent)) * np.exp(T * R) * 2 / T
-        sigma = sigma - (FF / FF_idx - 1) ** 2 / T
-    return sigma
+    atm_option_price = (call_options.loc[K_0, 'CLOSE'].mean() + put_options.loc[K_0, 'CLOSE'].mean()) / 2
+    k_0_component = atm_option_price * delta_k_0 / K_0 / K_0
+    sigma_square = ((sum(call_component) + sum(put_component) + k_0_component) * np.exp(maturity * risk_free_rate) * 2
+                    / maturity - (forward_price / K_0 - 1) ** 2 / maturity)
+    return sigma_square
 
 
 def calc_vix_index(vix_date):
@@ -177,12 +186,12 @@ def calc_vix_index(vix_date):
 
     near_term_expiration_date, next_term_expiration_date = get_near_and_next_term_option_expiration_dates(options, vix_date)
 
-    # get risk-free interest rates for both near-term and next-term options to expiration
+    # get risk-free interest rates for both near-term and next-term options to expiration (R)
     interpolated_shibor_rates = calc_interpolated_risk_free_interest_rates(options, vix_date)
     near_term_risk_free_rate = interpolated_shibor_rates[near_term_expiration_date]
     next_term_risk_free_rate = interpolated_shibor_rates[next_term_expiration_date]
 
-    # time to maturity in % year
+    # time to maturity in % year (T)
     vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
     near_maturity = (near_term_expiration_date - vix_date_in_datetime_format).days / 365.0
     next_maturity = (next_term_expiration_date - vix_date_in_datetime_format).days / 365.0
@@ -191,7 +200,7 @@ def calc_vix_index(vix_date):
     near_term_options = options[pd.to_datetime(options.EXE_ENDDATE) == near_term_expiration_date]
     next_term_options = options[pd.to_datetime(options.EXE_ENDDATE) == next_term_expiration_date]
 
-    # start calculating forward prices for near and next term options:
+    # start calculating forward prices for near and next term options (F):
 
     # split calls and puts from near and next options, and set the index of the panda dataframe to the values of the
     # 'EXE_PRICE' column, and then sort the resulting dataframe based on the index
@@ -205,7 +214,7 @@ def calc_vix_index(vix_date):
     next_atm_strike_price = abs(next_call_options.CLOSE - next_put_options.CLOSE).idxmin()
 
     # calculate the price difference between call option and put option for at-the-money strike price
-    # todo: comment, and why min()?
+    # todo: why min()?
     near_atm_call_put_price_diff = (near_call_options.CLOSE - near_put_options.CLOSE)[near_atm_strike_price].min()
     next_atm_call_put_price_diff = (next_call_options.CLOSE - next_put_options.CLOSE)[next_atm_strike_price].min()
 
@@ -214,9 +223,8 @@ def calc_vix_index(vix_date):
     next_forward_price = next_atm_strike_price + np.exp(next_maturity * next_term_risk_free_rate) * next_atm_call_put_price_diff
 
     # 计算不同到期日期权对于VIX的贡献
-    # todo: refactor
-    near_sigma = calSigmaSquare(near_term_options, near_forward_price, near_term_risk_free_rate, near_maturity)
-    next_sigma = calSigmaSquare(next_term_options, next_forward_price, next_term_risk_free_rate, next_maturity)
+    near_sigma = calc_sigma_square(near_call_options, near_put_options, near_term_options, near_forward_price, near_term_risk_free_rate, near_maturity)
+    next_sigma = calc_sigma_square(next_call_options, next_put_options, next_term_options, next_forward_price, next_term_risk_free_rate, next_maturity)
 
     # 利用两个不同到期日的期权对VIX的贡献sig1和sig2，
     # 已经相应的期权剩余到期时间T1和T2；
@@ -229,7 +237,7 @@ def calc_vix_index(vix_date):
 ivix = []
 for day in trade_day_dataset['DateTime']:
     ivix.append(calc_vix_index(day))
-    break
+    # break
     # print ivix
 
 # Render the chart
