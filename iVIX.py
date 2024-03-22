@@ -33,16 +33,16 @@ def calcInterpolatedRiskFreeInterestRates(options, vix_date):
     # 选取最近的有数据的日期，如果没有当天interest rate数据，则选取最近日的interest rate数据
     latest_shibor_date = datetime.strptime(shibor_rate_dataset.index[0], '%Y-%m-%d')
     if vix_date_in_datetime_format >= latest_shibor_date:
-        vix_date_shibor_rates = shibor_rate_dataset.iloc[0].values
+        vix_date_shibor_rates: np.ndarray = shibor_rate_dataset.iloc[0].values
     else:
-        vix_date_shibor_rates = shibor_rate_dataset.loc[vix_date_in_str_format].values
+        vix_date_shibor_rates: np.ndarray = shibor_rate_dataset.loc[vix_date_in_str_format].values
 
     # collect interpolated rates from given shibor interest rate dataset as a dictionary
     # {key: expiration date, value: interpolated shibor rate}
     interpolated_shibor_rates = {}
 
     # standard interest rate periods from the data that we have
-    interest_rate_periods = np.array([1.0, 7.0, 14.0, 30.0, 90.0, 180.0, 270.0, 365.0]) / 365.0
+    interest_rate_periods: np.ndarray = np.array([1.0, 7.0, 14.0, 30.0, 90.0, 180.0, 270.0, 365.0]) / 365.0
     # perform interpolation for different maturities
     cs = interpolate.CubicSpline(interest_rate_periods, vix_date_shibor_rates)
     min_period = min(interest_rate_periods)
@@ -110,9 +110,9 @@ def calcForwardPrice(call_options, put_options, risk_free_rate, maturity):
         forward_price: forward price / forward index level
     """
     # get at-the-money strike price, which the strike price when |call price - put price| is the smallest
-    atm_strike_price = abs(call_options.CLOSE - put_options.CLOSE).idxmin()
+    atm_strike_price: float = abs(call_options.CLOSE - put_options.CLOSE).idxmin()
     # calculate the price difference between call option and put option for at-the-money strike price
-    atm_call_put_price_diff = (call_options.CLOSE - put_options.CLOSE)[atm_strike_price].min()
+    atm_call_put_price_diff: float = (call_options.CLOSE - put_options.CLOSE)[atm_strike_price].min()
     # apply the formula for calculating forward prices
     forward_price = atm_strike_price + np.exp(maturity * risk_free_rate) * atm_call_put_price_diff
     return forward_price
@@ -134,12 +134,12 @@ def calcSigmaSquare(call_options, put_options, options, forward_price, risk_free
     # get K_0 (first price below the forward price) and use it to get out-of-the-money call/put options
     options = options.set_index('EXE_PRICE').sort_index()
     if options[options.index < forward_price].empty:
-        K_0 = options[options.index >= forward_price].index[0]
+        K_0: float = options[options.index >= forward_price].index[0]
     else:
-        K_0 = options[options.index < forward_price].index[-1]
+        K_0: float = options[options.index < forward_price].index[-1]
 
-    otm_call_options = call_options[call_options.index > K_0].copy()
-    otm_put_options = put_options[put_options.index < K_0].copy()
+    otm_call_options: pd.DataFrame = call_options[call_options.index > K_0].copy()
+    otm_put_options: pd.DataFrame = put_options[put_options.index < K_0].copy()
 
     # Interval between strike prices (Delta K_i)
     # get a series of strike prices for call/put options (the value for index = strike prices)
@@ -194,6 +194,36 @@ def calcSigmaSquare(call_options, put_options, options, forward_price, risk_free
     return sigma_square
 
 
+def outputSigmaSquare(options, expiration_date, interpolated_shibor_rates, maturity):
+    """
+    Parameters:
+        options：计算VIX的当天日期
+        expiration_date: 一个给定的option到期日
+        interpolated_shibor_rates: 插值计算得出的 risk-free rates
+        maturity: 一个给定的option年化期限
+
+    Return:
+        sigma_square: 一个给定option到期日对应的volatility
+    """
+    # get risk-free interest rate corresponding to an expiration date
+    risk_free_rate: float = interpolated_shibor_rates[expiration_date]
+
+    # select options with an expiration date
+    options_with_expiration_date: pd.DataFrame = options[pd.to_datetime(options.EXE_ENDDATE) == expiration_date]
+
+    # split calls and puts from options of a particular term,
+    # and set the index of the pandas dataframe to the values of the 'EXE_PRICE' column (strike),
+    # then sort the resulting dataframe based on the index
+    call_options: pd.DataFrame = (options_with_expiration_date[options_with_expiration_date.EXE_MODE == '认购']
+                                  .set_index('EXE_PRICE').sort_index())
+    put_options: pd.DataFrame = (options_with_expiration_date[options_with_expiration_date.EXE_MODE == '认沽']
+                                 .set_index('EXE_PRICE').sort_index())
+
+    forward_price: float = calcForwardPrice(call_options, put_options, risk_free_rate, maturity)
+    sigma_square: float = calcSigmaSquare(call_options, put_options, options_with_expiration_date, forward_price, risk_free_rate, maturity)
+    return sigma_square
+
+
 def calcVixIndex(vix_date):
     """
     Parameters:
@@ -204,54 +234,31 @@ def calcVixIndex(vix_date):
     """
 
     # select options that is available at the particular date of vix_date
-    options = options_dataset.loc[vix_date, :]
+    options: pd.DataFrame = options_dataset.loc[vix_date, :]
 
     # determine the near and next term expiration dates
     (near_term_expiration_date,
      next_term_expiration_date) = getNearAndNextTermOptionExpirationDates(options, vix_date)
 
-    # get risk-free interest rates for both near-term and next-term options to expiration
+    # get interpolated risk-free interest rates
     interpolated_shibor_rates = calcInterpolatedRiskFreeInterestRates(options, vix_date)
-    near_term_risk_free_rate = interpolated_shibor_rates[near_term_expiration_date]
-    next_term_risk_free_rate = interpolated_shibor_rates[next_term_expiration_date]
 
     # time to maturity in % year
     vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
     near_maturity = (near_term_expiration_date - vix_date_in_datetime_format).days / 365.0
     next_maturity = (next_term_expiration_date - vix_date_in_datetime_format).days / 365.0
 
-    # get near term and next term options which are pandas dataframes
-    near_term_options: pd.DataFrame = options[pd.to_datetime(options.EXE_ENDDATE) == near_term_expiration_date]
-    next_term_options: pd.DataFrame = options[pd.to_datetime(options.EXE_ENDDATE) == next_term_expiration_date]
-
-    # start calculating forward prices for near and next term options:
-
-    # split calls and puts from near and next options, and set the index of the panda dataframe to the values of the
-    # 'EXE_PRICE' column, and then sort the resulting dataframe based on the index
-    near_call_options = near_term_options[near_term_options.EXE_MODE == '认购'].set_index('EXE_PRICE').sort_index()
-    near_put_options = near_term_options[near_term_options.EXE_MODE == '认沽'].set_index('EXE_PRICE').sort_index()
-    next_call_options = next_term_options[next_term_options.EXE_MODE == '认购'].set_index('EXE_PRICE').sort_index()
-    next_put_options = next_term_options[next_term_options.EXE_MODE == '认沽'].set_index('EXE_PRICE').sort_index()
-
-    # calculate forward price for near/next term options
-    near_forward_price = calcForwardPrice(near_call_options, near_put_options, near_term_risk_free_rate,
-                                          near_maturity)
-    next_forward_price = calcForwardPrice(next_call_options, next_put_options, next_term_risk_free_rate,
-                                          next_maturity)
-
     # calculate volatility for both near-term and next-term options
-    near_sigma_square = calcSigmaSquare(near_call_options, near_put_options, near_term_options, near_forward_price,
-                                        near_term_risk_free_rate, near_maturity)
-    next_sigma_square = calcSigmaSquare(next_call_options, next_put_options, next_term_options, next_forward_price,
-                                        next_term_risk_free_rate, next_maturity)
+    near_sigma_square: float = outputSigmaSquare(options, near_term_expiration_date, interpolated_shibor_rates, near_maturity)
+    next_sigma_square: float = outputSigmaSquare(options, next_term_expiration_date, interpolated_shibor_rates, next_maturity)
 
     # get the VIX index value by calculating the weighted average of above volatility, where the weight is
     # proportional to the absolute time difference between the expiration date and the number of days in the
     # future that we want to measure VIX in.
     near_weight = (next_maturity - CONSTANT_MATURITY_TERM / 365.0) / (next_maturity - near_maturity)
     next_weight = 1 - near_weight
-    vix = 100 * np.sqrt((near_maturity * near_weight * near_sigma_square + next_maturity * next_weight *
-                         next_sigma_square) * 365.0 / CONSTANT_MATURITY_TERM)
+    vix = 100.0 * np.sqrt((near_maturity * near_weight * near_sigma_square + next_maturity * next_weight *
+                           next_sigma_square) * 365.0 / CONSTANT_MATURITY_TERM)
     return vix
 
 
