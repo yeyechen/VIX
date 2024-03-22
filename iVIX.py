@@ -1,14 +1,10 @@
+import os
 from datetime import datetime
 import numpy as np
 import pandas as pd
 from scipy import interpolate
-
-MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD = 5
-
-shibor_rate_dataset = pd.read_csv('shibor.csv', index_col=0, encoding='GBK')
-options_dataset = pd.read_csv('options.csv', index_col=0, encoding='GBK')
-trade_day_dataset = pd.read_csv('tradeday.csv', encoding='GBK')
-true_ivix_dataset = pd.read_csv('ivixx.csv', encoding='GBK')
+from pyecharts.charts import Line
+import pyecharts.options as opts
 
 
 def calc_interpolated_risk_free_interest_rates(options, vix_date):
@@ -91,9 +87,8 @@ def get_near_and_next_term_option_expiration_dates(options, vix_date):
     next_term_expiration_date_index = 1
 
     while ((next_term_expiration_date_index < len(expiration_dates)) and
-        ((sorted_expiration_dates[near_term_expiration_date_index] - vix_date_in_datetime_format).days <
-         MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD)):
-
+           ((sorted_expiration_dates[near_term_expiration_date_index] - vix_date_in_datetime_format).days <
+            MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD)):
         near_term_expiration_date_index += 1
         next_term_expiration_date_index += 1
 
@@ -103,11 +98,32 @@ def get_near_and_next_term_option_expiration_dates(options, vix_date):
     return near_term_expiration_date, next_term_expiration_date
 
 
+def calc_forward_price(call_options, put_options, risk_free_rate, maturity):
+    """
+    Parameters:
+        call_options: 当天的call options的数据
+        put_options: 当天的put options的数据
+        risk_free_rate: 与年化期限对应的risk free interest rate
+        maturity: 年化期限
+
+    Return:
+        forward_price: forward price / forward index level
+    """
+    # get at-the-money strike price, which the strike price when |call price - put price| is the smallest
+    atm_strike_price = abs(call_options.CLOSE - put_options.CLOSE).idxmin()
+    # calculate the price difference between call option and put option for at-the-money strike price
+    atm_call_put_price_diff = (call_options.CLOSE - put_options.CLOSE)[atm_strike_price].min()
+    # apply the formula for calculating forward prices
+    forward_price = atm_strike_price + np.exp(maturity * risk_free_rate) * atm_call_put_price_diff
+    return forward_price
+
+
 def calc_sigma_square(call_options, put_options, options, forward_price, risk_free_rate, maturity):
     """
     Parameters:
         call_options: 当天的call options的数据
         put_options: 当天的put options的数据
+        options: 当天所有options的数据
         forward_price: forward price / forward index level
         risk_free_rate: 与年化期限对应的risk free interest rate
         maturity: 年化期限
@@ -137,7 +153,8 @@ def calc_sigma_square(call_options, put_options, options, forward_price, risk_fr
         otm_call_options['DELTA_K'] = otm_call_strikes[-1] - otm_call_strikes[0]
     else:
         for i in range(1, len(otm_call_strikes) - 1):
-            otm_call_options.loc[otm_call_strikes[i], 'DELTA_K'] = (otm_call_strikes[i + 1] - otm_call_strikes[i - 1]) / 2.0
+            otm_call_options.loc[otm_call_strikes[i], 'DELTA_K'] = (otm_call_strikes[i + 1] - otm_call_strikes[
+                i - 1]) / 2.0
         otm_call_options.loc[otm_call_strikes[0], 'DELTA_K'] = otm_call_strikes[1] - otm_call_strikes[0]
         otm_call_options.loc[otm_call_strikes[-1], 'DELTA_K'] = otm_call_strikes[-1] - otm_call_strikes[-2]
 
@@ -152,55 +169,62 @@ def calc_sigma_square(call_options, put_options, options, forward_price, risk_fr
         otm_put_options.loc[otm_put_strikes[0], 'DELTA_K'] = otm_put_strikes[1] - otm_put_strikes[0]
         otm_put_options.loc[otm_put_strikes[-1], 'DELTA_K'] = otm_put_strikes[-1] - otm_put_strikes[-2]
 
-    # calculate (Delta_K_i / K_i^2) * price(K_i) in the formula, we need to calculate this part for K_0 explicitly
+    # calculate (Delta_K_i / K_i^2) * price(K_i) part in the formula, we need to calculate this part for K_0 explicitly
     call_component = pd.Series()
     put_component = pd.Series()
-    delta_k_0 = 0
-    if not otm_call_strikes.empty:
+    delta_K_0 = 0
+    if otm_call_strikes.empty and otm_put_strikes.empty:
+        pass
+    elif (not otm_call_strikes.empty) and otm_put_strikes.empty:
         call_component = otm_call_options.CLOSE * otm_call_options.DELTA_K / otm_call_options.index / otm_call_options.index
-        delta_k_0 = K_0 - otm_call_strikes[0]
-    if not otm_put_strikes.empty:
+        delta_K_0 = otm_call_strikes[0] - K_0
+    elif (not otm_put_strikes.empty) and otm_call_strikes.empty:
         put_component = otm_put_options.CLOSE * otm_put_options.DELTA_K / otm_put_options.index / otm_put_options.index
-        delta_k_0 = otm_put_strikes[-1] - K_0
-    if (not otm_call_strikes.empty) and (not otm_put_strikes.empty):
-        delta_k_0 = (otm_call_strikes[0] - otm_put_strikes[-1]) / 2
+        delta_K_0 = K_0 - otm_put_strikes[-1]
+    else:
+        call_component = otm_call_options.CLOSE * otm_call_options.DELTA_K / otm_call_options.index / otm_call_options.index
+        put_component = otm_put_options.CLOSE * otm_put_options.DELTA_K / otm_put_options.index / otm_put_options.index
+        delta_K_0 = (otm_call_strikes[0] - otm_put_strikes[-1]) / 2
 
     atm_option_price = (call_options.loc[K_0, 'CLOSE'].mean() + put_options.loc[K_0, 'CLOSE'].mean()) / 2
-    k_0_component = atm_option_price * delta_k_0 / K_0 / K_0
-    sigma_square = ((sum(call_component) + sum(put_component) + k_0_component) * np.exp(maturity * risk_free_rate) * 2
-                    / maturity - (forward_price / K_0 - 1) ** 2 / maturity)
+    k_0_component = atm_option_price * delta_K_0 / K_0 / K_0
+
+    sigma_square = ((sum(call_component) + sum(put_component) + k_0_component) * np.exp(maturity * risk_free_rate) * 2 /
+                    maturity - (forward_price / K_0 - 1) ** 2 / maturity)
     return sigma_square
 
 
 def calc_vix_index(vix_date):
     """
     Parameters:
-        vix_date：计算VIX的当天日期，'%Y/%m/%d' 字符串格式
+        vix_date：计算VIX的当天日期
 
     Return:
         vix: VIX Index值
     """
 
-    # 在options_dataset里选取以vix_date为起始日期的所有options数据
+    # select options that is available at the particular date of vix_date
     options = options_dataset.loc[vix_date, :]
 
-    near_term_expiration_date, next_term_expiration_date = get_near_and_next_term_option_expiration_dates(options, vix_date)
+    # determine the near and next term expiration dates
+    (near_term_expiration_date,
+     next_term_expiration_date) = get_near_and_next_term_option_expiration_dates(options, vix_date)
 
-    # get risk-free interest rates for both near-term and next-term options to expiration (R)
+    # get risk-free interest rates for both near-term and next-term options to expiration
     interpolated_shibor_rates = calc_interpolated_risk_free_interest_rates(options, vix_date)
     near_term_risk_free_rate = interpolated_shibor_rates[near_term_expiration_date]
     next_term_risk_free_rate = interpolated_shibor_rates[next_term_expiration_date]
 
-    # time to maturity in % year (T)
+    # time to maturity in % year
     vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
     near_maturity = (near_term_expiration_date - vix_date_in_datetime_format).days / 365.0
     next_maturity = (next_term_expiration_date - vix_date_in_datetime_format).days / 365.0
 
     # get near term and next term options which are pandas dataframes
-    near_term_options = options[pd.to_datetime(options.EXE_ENDDATE) == near_term_expiration_date]
-    next_term_options = options[pd.to_datetime(options.EXE_ENDDATE) == next_term_expiration_date]
+    near_term_options: pd.DataFrame = options[pd.to_datetime(options.EXE_ENDDATE) == near_term_expiration_date]
+    next_term_options: pd.DataFrame = options[pd.to_datetime(options.EXE_ENDDATE) == next_term_expiration_date]
 
-    # start calculating forward prices for near and next term options (F):
+    # start calculating forward prices for near and next term options:
 
     # split calls and puts from near and next options, and set the index of the panda dataframe to the values of the
     # 'EXE_PRICE' column, and then sort the resulting dataframe based on the index
@@ -209,47 +233,65 @@ def calc_vix_index(vix_date):
     next_call_options = next_term_options[next_term_options.EXE_MODE == '认购'].set_index('EXE_PRICE').sort_index()
     next_put_options = next_term_options[next_term_options.EXE_MODE == '认沽'].set_index('EXE_PRICE').sort_index()
 
-    # at-the-money strike price, the strike price when |call price - put price| is smallest
-    near_atm_strike_price = abs(near_call_options.CLOSE - near_put_options.CLOSE).idxmin()
-    next_atm_strike_price = abs(next_call_options.CLOSE - next_put_options.CLOSE).idxmin()
+    near_forward_price = calc_forward_price(near_call_options, near_put_options, near_term_risk_free_rate,
+                                            near_maturity)
+    next_forward_price = calc_forward_price(next_call_options, next_put_options, next_term_risk_free_rate,
+                                            next_maturity)
 
-    # calculate the price difference between call option and put option for at-the-money strike price
-    # todo: why min()?
-    near_atm_call_put_price_diff = (near_call_options.CLOSE - near_put_options.CLOSE)[near_atm_strike_price].min()
-    next_atm_call_put_price_diff = (next_call_options.CLOSE - next_put_options.CLOSE)[next_atm_strike_price].min()
+    # calculate volatility for both near-term and next-term options
+    near_sigma_square = calc_sigma_square(near_call_options, near_put_options, near_term_options, near_forward_price,
+                                          near_term_risk_free_rate, near_maturity)
+    next_sigma_square = calc_sigma_square(next_call_options, next_put_options, next_term_options, next_forward_price,
+                                          next_term_risk_free_rate, next_maturity)
 
-    # apply the formula for calculating forward prices (or called forward index level)
-    near_forward_price = near_atm_strike_price + np.exp(near_maturity * near_term_risk_free_rate) * near_atm_call_put_price_diff
-    next_forward_price = next_atm_strike_price + np.exp(next_maturity * next_term_risk_free_rate) * next_atm_call_put_price_diff
-
-    # 计算不同到期日期权对于VIX的贡献
-    near_sigma = calc_sigma_square(near_call_options, near_put_options, near_term_options, near_forward_price, near_term_risk_free_rate, near_maturity)
-    next_sigma = calc_sigma_square(next_call_options, next_put_options, next_term_options, next_forward_price, next_term_risk_free_rate, next_maturity)
-
-    # 利用两个不同到期日的期权对VIX的贡献sig1和sig2，
-    # 已经相应的期权剩余到期时间T1和T2；
-    # 差值得到并返回VIX指数(%)
-    w = (next_maturity - 30.0 / 365.0) / (next_maturity - near_maturity)
-    vix = near_maturity * w * near_sigma + next_maturity * (1 - w) * next_sigma
-    return 100 * np.sqrt(abs(vix) * 365.0 / 30.0)
+    # get the VIX index value by calculating the weighted average of above volatility, where the weight is
+    # proportional to the absolute time difference between the expiration date and the number of days in the
+    # future that we want to measure VIX in.
+    near_weight = (next_maturity - CONSTANT_MATURITY_TERM / 365.0) / (next_maturity - near_maturity)
+    next_weight = 1 - near_weight
+    vix = 100 * np.sqrt((near_maturity * near_weight * near_sigma_square + next_maturity * next_weight *
+                         next_sigma_square) * 365.0 / CONSTANT_MATURITY_TERM)
+    return vix
 
 
-ivix = []
-for day in trade_day_dataset['DateTime']:
-    ivix.append(calc_vix_index(day))
-    # break
-    # print ivix
+def main():
+    # calculate vix index for every available trade day
+    # ivix is the name for 中国波指
+    ivix = []
+    for day in trade_day_dataset['DateTime']:
+        ivix.append(calc_vix_index(day))
 
-# Render the chart
-from pyecharts.charts import Line
-import pyecharts.options as opts
+    # render chart
+    attr = true_ivix_dataset['日期'].tolist()
+    ivix_data = true_ivix_dataset['收盘价(元)'].tolist()
+    line = Line().set_global_opts(title_opts=opts.TitleOpts(title='中国波指'))
+    line.add_xaxis(attr)
+    line.add_yaxis('中证指数发布', ivix_data, markpoint_opts=opts.MarkPointOpts(data=[opts.MarkPointItem(type_="max")]))
+    line.add_yaxis('手动计算', ivix, markline_opts=opts.MarkLineOpts(
+        data=[opts.MarkLineItem(type_='max'), opts.MarkLineItem(type_='average')]))
+    line.render('vix.html')
 
-attr = true_ivix_dataset[u'日期'].tolist()
-ivix_data = true_ivix_dataset[u'收盘价(元)'].tolist()
-line = Line().set_global_opts(title_opts=opts.TitleOpts(title="中国波指"))
-line.add_xaxis(attr)
-line.add_yaxis("中证指数发布", ivix_data, markpoint_opts=opts.MarkPointOpts(data=[opts.MarkPointItem(type_="max")]))
-line.add_yaxis("手动计算", ivix, markline_opts=opts.MarkLineOpts(
-    data=[opts.MarkLineItem(type_="max"), opts.MarkLineItem(type_="average")]))
 
-line.render('vix.html')
+if __name__ == '__main__':
+
+    MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD = 5
+    CONSTANT_MATURITY_TERM = 30
+
+    file_path = os.getcwd()
+    risk_free_rates_file_name = 'shibor.csv'
+    options_file_name = 'options.csv'
+    trade_days_file_name = 'tradeday.csv'
+    true_ivix_file_name = 'ivixx.csv'
+
+    # get necessary datasets from paths
+    risk_free_rates_file_path = os.path.join(file_path, risk_free_rates_file_name)
+    options_file_path = os.path.join(file_path, options_file_name)
+    trade_days_file_path = os.path.join(file_path, trade_days_file_name)
+    true_ivix_file_path = os.path.join(file_path, true_ivix_file_name)
+
+    shibor_rate_dataset = pd.read_csv(risk_free_rates_file_path, index_col=0, encoding='GBK')
+    options_dataset = pd.read_csv(options_file_path, index_col=0, encoding='GBK')
+    trade_day_dataset = pd.read_csv(trade_days_file_path, encoding='GBK')
+    true_ivix_dataset = pd.read_csv(true_ivix_file_path, encoding='GBK')
+
+    main()
