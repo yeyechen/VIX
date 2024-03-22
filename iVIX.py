@@ -7,7 +7,7 @@ from pyecharts.charts import Line
 import pyecharts.options as opts
 
 
-def calc_interpolated_risk_free_interest_rates(options, vix_date):
+def calcInterpolatedRiskFreeInterestRates(options, vix_date):
     """
     Parameters:
         options: 计算VIX的当天的options的数据
@@ -63,7 +63,7 @@ def calc_interpolated_risk_free_interest_rates(options, vix_date):
     return interpolated_shibor_rates
 
 
-def get_near_and_next_term_option_expiration_dates(options, vix_date):
+def getNearAndNextTermOptionExpirationDates(options, vix_date):
     """
     Parameters:
         options: 计算VIX的当天的options的数据
@@ -98,7 +98,7 @@ def get_near_and_next_term_option_expiration_dates(options, vix_date):
     return near_term_expiration_date, next_term_expiration_date
 
 
-def calc_forward_price(call_options, put_options, risk_free_rate, maturity):
+def calcForwardPrice(call_options, put_options, risk_free_rate, maturity):
     """
     Parameters:
         call_options: 当天的call options的数据
@@ -118,7 +118,7 @@ def calc_forward_price(call_options, put_options, risk_free_rate, maturity):
     return forward_price
 
 
-def calc_sigma_square(call_options, put_options, options, forward_price, risk_free_rate, maturity):
+def calcSigmaSquare(call_options, put_options, options, forward_price, risk_free_rate, maturity):
     """
     Parameters:
         call_options: 当天的call options的数据
@@ -194,7 +194,7 @@ def calc_sigma_square(call_options, put_options, options, forward_price, risk_fr
     return sigma_square
 
 
-def calc_vix_index(vix_date):
+def calcVixIndex(vix_date):
     """
     Parameters:
         vix_date：计算VIX的当天日期
@@ -208,10 +208,10 @@ def calc_vix_index(vix_date):
 
     # determine the near and next term expiration dates
     (near_term_expiration_date,
-     next_term_expiration_date) = get_near_and_next_term_option_expiration_dates(options, vix_date)
+     next_term_expiration_date) = getNearAndNextTermOptionExpirationDates(options, vix_date)
 
     # get risk-free interest rates for both near-term and next-term options to expiration
-    interpolated_shibor_rates = calc_interpolated_risk_free_interest_rates(options, vix_date)
+    interpolated_shibor_rates = calcInterpolatedRiskFreeInterestRates(options, vix_date)
     near_term_risk_free_rate = interpolated_shibor_rates[near_term_expiration_date]
     next_term_risk_free_rate = interpolated_shibor_rates[next_term_expiration_date]
 
@@ -233,16 +233,17 @@ def calc_vix_index(vix_date):
     next_call_options = next_term_options[next_term_options.EXE_MODE == '认购'].set_index('EXE_PRICE').sort_index()
     next_put_options = next_term_options[next_term_options.EXE_MODE == '认沽'].set_index('EXE_PRICE').sort_index()
 
-    near_forward_price = calc_forward_price(near_call_options, near_put_options, near_term_risk_free_rate,
-                                            near_maturity)
-    next_forward_price = calc_forward_price(next_call_options, next_put_options, next_term_risk_free_rate,
-                                            next_maturity)
+    # calculate forward price for near/next term options
+    near_forward_price = calcForwardPrice(near_call_options, near_put_options, near_term_risk_free_rate,
+                                          near_maturity)
+    next_forward_price = calcForwardPrice(next_call_options, next_put_options, next_term_risk_free_rate,
+                                          next_maturity)
 
     # calculate volatility for both near-term and next-term options
-    near_sigma_square = calc_sigma_square(near_call_options, near_put_options, near_term_options, near_forward_price,
-                                          near_term_risk_free_rate, near_maturity)
-    next_sigma_square = calc_sigma_square(next_call_options, next_put_options, next_term_options, next_forward_price,
-                                          next_term_risk_free_rate, next_maturity)
+    near_sigma_square = calcSigmaSquare(near_call_options, near_put_options, near_term_options, near_forward_price,
+                                        near_term_risk_free_rate, near_maturity)
+    next_sigma_square = calcSigmaSquare(next_call_options, next_put_options, next_term_options, next_forward_price,
+                                        next_term_risk_free_rate, next_maturity)
 
     # get the VIX index value by calculating the weighted average of above volatility, where the weight is
     # proportional to the absolute time difference between the expiration date and the number of days in the
@@ -259,7 +260,7 @@ def main():
     # ivix is the name for 中国波指
     ivix = []
     for day in trade_day_dataset['DateTime']:
-        ivix.append(calc_vix_index(day))
+        ivix.append(calcVixIndex(day))
 
     # render chart
     attr = true_ivix_dataset['日期'].tolist()
