@@ -6,6 +6,8 @@ from scipy import interpolate
 from pyecharts.charts import Line
 import pyecharts.options as opts
 
+MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD = 5
+CONSTANT_MATURITY_TERM = 30
 
 def calcInterpolatedRiskFreeInterestRates(options, vix_date):
     """
@@ -284,8 +286,6 @@ def main():
 
 
 if __name__ == '__main__':
-    MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD = 5
-    CONSTANT_MATURITY_TERM = 30
 
     file_path = os.getcwd()
     risk_free_rates_file_name = 'shibor.csv'
