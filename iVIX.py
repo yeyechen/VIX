@@ -16,8 +16,7 @@ def calcInterpolatedRiskFreeInterestRates(options, vix_date):
     Return：
         interpolated_shibor_rates：与到期日对应的年化期限(maturity)的risk free interest rates
     """
-    vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
-    vix_date_in_str_format = vix_date_in_datetime_format.strftime('%Y-%m-%d')
+    vix_date_in_str_format = vix_date.strftime('%Y-%m-%d')
 
     # sort in ascending order for all unique expiration dates
     expiration_dates = np.sort(options.EXE_ENDDATE.unique())
@@ -28,11 +27,11 @@ def calcInterpolatedRiskFreeInterestRates(options, vix_date):
     for day in expiration_dates:
         day = pd.to_datetime(day)
         # % in year
-        maturities[day] = float((day - vix_date_in_datetime_format).days) / 365.0
+        maturities[day] = float((day - vix_date).days) / 365.0
 
     # 选取最近的有数据的日期，如果没有当天interest rate数据，则选取最近日的interest rate数据
     latest_shibor_date = datetime.strptime(shibor_rate_dataset.index[0], '%Y-%m-%d')
-    if vix_date_in_datetime_format >= latest_shibor_date:
+    if vix_date >= latest_shibor_date:
         vix_date_shibor_rates: np.ndarray = shibor_rate_dataset.iloc[0].values
     else:
         vix_date_shibor_rates: np.ndarray = shibor_rate_dataset.loc[vix_date_in_str_format].values
@@ -73,7 +72,7 @@ def getNearAndNextTermOptionExpirationDates(options, vix_date):
         near_term_expiration_date: 当月合约的到期日
         next_term_expiration_date: 次月合约的到期日
     """
-    vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
+
     # convert all unique expiration dates to datetime format into a python list
     expiration_dates = [datetime.strptime(i, '%Y/%m/%d %H:%M') for i in list(options.EXE_ENDDATE.unique())]
 
@@ -87,7 +86,7 @@ def getNearAndNextTermOptionExpirationDates(options, vix_date):
     next_term_expiration_date_index = 1
 
     while ((next_term_expiration_date_index < len(expiration_dates)) and
-           ((sorted_expiration_dates[near_term_expiration_date_index] - vix_date_in_datetime_format).days <
+           ((sorted_expiration_dates[near_term_expiration_date_index] - vix_date).days <
             MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD)):
         near_term_expiration_date_index += 1
         next_term_expiration_date_index += 1
@@ -225,7 +224,7 @@ def outputSigmaSquare(options, expiration_date, interpolated_shibor_rates, matur
     return sigma_square
 
 
-def calcVixIndex(vix_date, options, interest_rate):
+def calcVixIndex(vix_date):
     """
     Parameters:
         vix_date：计算VIX的当天日期
@@ -234,18 +233,26 @@ def calcVixIndex(vix_date, options, interest_rate):
         vix: VIX Index值
     """
 
+    # select options that is available at the particular date of vix_date
+    options: pd.DataFrame = options_dataset.loc[vix_date, :]
+
+    # convert vix_date to datetime format
+    vix_date: datetime = datetime.strptime(vix_date, '%Y/%m/%d')
+
+    # get interpolated risk-free interest rates
+    interpolated_shibor_rates = calcInterpolatedRiskFreeInterestRates(options, vix_date)
+
     # determine the near and next term expiration dates
     (near_term_expiration_date,
      next_term_expiration_date) = getNearAndNextTermOptionExpirationDates(options, vix_date)
 
     # time to maturity in % year
-    vix_date_in_datetime_format = datetime.strptime(vix_date, '%Y/%m/%d')
-    near_maturity = (near_term_expiration_date - vix_date_in_datetime_format).days / 365.0
-    next_maturity = (next_term_expiration_date - vix_date_in_datetime_format).days / 365.0
+    near_maturity = (near_term_expiration_date - vix_date).days / 365.0
+    next_maturity = (next_term_expiration_date - vix_date).days / 365.0
 
     # calculate volatility for both near-term and next-term options
-    near_sigma_square: float = outputSigmaSquare(options, near_term_expiration_date, interest_rate, near_maturity)
-    next_sigma_square: float = outputSigmaSquare(options, next_term_expiration_date, interest_rate, next_maturity)
+    near_sigma_square: float = outputSigmaSquare(options, near_term_expiration_date, interpolated_shibor_rates, near_maturity)
+    next_sigma_square: float = outputSigmaSquare(options, next_term_expiration_date, interpolated_shibor_rates, next_maturity)
 
     # get the VIX index value by calculating the weighted average of above volatility, where the weight is
     # proportional to the absolute time difference between the expiration date and the number of days in the
@@ -262,13 +269,8 @@ def main():
     # ivix is the name for 中国波指
     ivix = []
     for day in trade_day_dataset['DateTime']:
-        # select options that is available at the particular date of vix_date
-        options = pd.DataFrame = options_dataset.loc[day, :]
 
-        # get interpolated risk-free interest rates
-        interpolated_shibor_rates = calcInterpolatedRiskFreeInterestRates(options, day)
-
-        ivix.append(calcVixIndex(day, options, interpolated_shibor_rates))
+        ivix.append(calcVixIndex(day))
 
     # render chart
     attr = true_ivix_dataset['日期'].tolist()
