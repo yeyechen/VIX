@@ -7,6 +7,10 @@ import pandas as pd
 
 clear = lambda: os.system('clear')
 
+TRADING_MINUTES_IN_A_DAY = 240
+TRADING_DAYS_IN_A_YEAR = 244
+# trading days in a month
+CONSTANT_MATURITY_TERM = 15
 
 def outputSigmaSquare(options, expiration_time, risk_free_rates, maturity):
     """
@@ -37,7 +41,7 @@ def outputSigmaSquare(options, expiration_time, risk_free_rates, maturity):
     return sigma_square
 
 
-def calcVixIndex(vix_time: datetime):
+def calcVixIndex(vix_time: datetime, options):
     """
         Parameters:
             vix_time：计算VIX的时间点
@@ -46,7 +50,7 @@ def calcVixIndex(vix_time: datetime):
             vix: VIX Index值
         """
     # select options for a particular vix_time
-    options: pd.DataFrame = new_options_dataset.loc[vix_time, :]
+    options: pd.DataFrame = options.loc[vix_time, :]
 
     # get near/next-term expiration time
     (near_term_expiration_time, next_term_expiration_time) = iVIX.getNearAndNextTermOptionExpirationDates(options, vix_time)
@@ -83,12 +87,12 @@ def main():
 
     # calculating vix
     for (i, time) in enumerate(trading_time):
-        ivix.append(calcVixIndex(time))
-        progressBar(len(trading_time), i)
+        ivix.append(calcVixIndex(time, new_options_dataset))
+        # progressBar(len(trading_time), i)
 
     # output to a csv file
     output = pd.DataFrame({'trading_time': trading_time, 'vix': ivix})
-    save_folder = 'calc_data'
+    save_folder = 'calc_data_minute'
     file_name = 'cmt=' + str(CONSTANT_MATURITY_TERM) + '_thresh=' + str(MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD) + '.csv'
     save_path = os.path.join(file_path, save_folder, file_name)
     output.to_csv(save_path, index=False)
@@ -104,10 +108,6 @@ def progressBar(total, cnt):
 
 
 if __name__ == '__main__':
-    TRADING_MINUTES_IN_A_DAY = 240
-    TRADING_DAYS_IN_A_YEAR = 244
-    # trading days in a month
-    CONSTANT_MATURITY_TERM = 15
 
     file_path = os.getcwd()
 
