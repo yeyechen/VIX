@@ -1,11 +1,11 @@
 import iVIX
+from iVIX import MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD
 import os
 from datetime import datetime
 import numpy as np
 import pandas as pd
-from scipy import interpolate
-from pyecharts.charts import Line
-import pyecharts.options as opts
+
+clear = lambda: os.system('clear')
 
 
 def outputSigmaSquare(options, expiration_time, risk_free_rates, maturity):
@@ -54,10 +54,14 @@ def calcVixIndex(vix_time: datetime):
     # calculate near/next-term 年化期限
     near_maturity_data = options.loc[options['EXE_ENDDATE'] == near_term_expiration_time.strftime('%Y/%m/%d %H:%M'), 'd2e':'timeleft']
     next_maturity_data = options.loc[options['EXE_ENDDATE'] == next_term_expiration_time.strftime('%Y/%m/%d %H:%M'), 'd2e':'timeleft']
-    near_maturity_days, near_maturity_minutes = near_maturity_data.iloc[0,0], near_maturity_data.iloc[0,1]
+    near_maturity_days, near_maturity_minutes = near_maturity_data.iloc[0, 0], near_maturity_data.iloc[0, 1]
     next_maturity_days, next_maturity_minutes = next_maturity_data.iloc[0, 0], next_maturity_data.iloc[0, 1]
     near_maturity = (near_maturity_days + near_maturity_minutes / TRADING_MINUTES_IN_A_DAY) / TRADING_DAYS_IN_A_YEAR
     next_maturity = (next_maturity_days + next_maturity_minutes / TRADING_MINUTES_IN_A_DAY) / TRADING_DAYS_IN_A_YEAR
+
+    # assertion
+    # assert near_maturity < constant_maturity_term, 'violates near_maturity < constant_maturity_term'
+    # assert next_maturity > constant_maturity_term, 'violates next_maturity > constant_maturity_term'
 
     # calculate volatility for both near/next-term options
     risk_free_rates = {near_term_expiration_time: 0.0, next_term_expiration_time: 0.0}
@@ -75,37 +79,35 @@ def calcVixIndex(vix_time: datetime):
 def main():
     # calculate vix index and implied volatility for every available trading time
     ivix = []
-    iv = []
     trading_time = sorted(new_options_dataset.index.unique())
 
-    for time in trading_time:
-
+    # calculating vix
+    for (i, time) in enumerate(trading_time):
         ivix.append(calcVixIndex(time))
+        progressBar(len(trading_time), i)
 
-        # compute the average of implied volatility for each trading time
-        options_for_iv: pd.DataFrame = new_options_dataset.loc[time, :]
-        implied_volatility = options_for_iv['iv'].mean()
-        iv.append(implied_volatility * 100)
+    # output to a csv file
+    output = pd.DataFrame({'trading_time': trading_time, 'vix': ivix})
+    save_folder = 'calc_data'
+    file_name = 'cmt=' + str(CONSTANT_MATURITY_TERM) + '_thresh=' + str(MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD) + '.csv'
+    save_path = os.path.join(file_path, save_folder, file_name)
+    output.to_csv(save_path, index=False)
 
-        # render chart
-        attr = trading_time
-        line = Line().set_global_opts(title_opts=opts.TitleOpts(title='中国波指'))
-        line.add_xaxis(attr)
-        line.add_yaxis('隐含波动率', iv,
-                        markpoint_opts=opts.MarkPointOpts(data=[opts.MarkPointItem(type_="max")]))
-        line.add_yaxis('手动计算', ivix, markline_opts=opts.MarkLineOpts(
-            data=[opts.MarkLineItem(type_='max'), opts.MarkLineItem(type_='average')]))
-        line.render('new_vix.html')
 
+def progressBar(total, cnt):
+    # progress bar
+    clear()
+    bar_length = total / 100
+    print(str(cnt) + '/' + str(total))
+    bar_cnt = divmod(cnt, 100)
+    print('[' + '%' * bar_cnt[0] + '-' * (int(bar_length) - bar_cnt[0]) + ']')
 
 
 if __name__ == '__main__':
-
     TRADING_MINUTES_IN_A_DAY = 240
     TRADING_DAYS_IN_A_YEAR = 244
-    MEANINGFUL_VIX_INDEX_MATURITY_THRESHOLD = 5
     # trading days in a month
-    CONSTANT_MATURITY_TERM = 20
+    CONSTANT_MATURITY_TERM = 15
 
     file_path = os.getcwd()
 
@@ -125,4 +127,3 @@ if __name__ == '__main__':
     new_options_dataset['EXE_ENDDATE'] = new_options_dataset['EXE_ENDDATE'].str.replace('-', '/') + ' ' + trading_close_time
 
     main()
-
