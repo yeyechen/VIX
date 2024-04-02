@@ -68,7 +68,12 @@ def calcVixIndex(vix_time: datetime, options):
     # assert next_maturity > constant_maturity_term, 'violates next_maturity > constant_maturity_term'
 
     # calculate volatility for both near/next-term options
-    risk_free_rates = {near_term_expiration_time: 0.0, next_term_expiration_time: 0.0}
+    near_term_risk_free_rates = options.loc[options['EXE_ENDDATE'] == near_term_expiration_time.strftime('%Y/%m/%d %H:%M'), :]
+    average_near_term_risk_free_rate = near_term_risk_free_rates['r'].mean()
+    next_term_risk_free_rates = options.loc[options['EXE_ENDDATE'] == next_term_expiration_time.strftime('%Y/%m/%d %H:%M'), :]
+    average_next_term_risk_free_rate = next_term_risk_free_rates['r'].mean()
+
+    risk_free_rates = {near_term_expiration_time: average_near_term_risk_free_rate, next_term_expiration_time: average_next_term_risk_free_rate}
     near_sigma_square: float = outputSigmaSquare(options, near_term_expiration_time, risk_free_rates, near_maturity)
     next_sigma_square: float = outputSigmaSquare(options, next_term_expiration_time, risk_free_rates, next_maturity)
 
